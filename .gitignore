@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+snack_erp.db
+credentials.json
+.DS_Store
