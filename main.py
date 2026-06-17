@@ -57,6 +57,24 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 user_state = {}
 
+from flask import Flask
+import threading
+import os
+
+web = Flask(__name__)
+
+
+@web.route("/")
+def home():
+    return "ERP BOT OK"
+
+
+def run_web():
+    web.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000))
+    )
+
 
 # =========================
 # данные пользователя для аудита
@@ -1229,8 +1247,11 @@ def main():
 
 if __name__ == "__main__":
 
-    loop = asyncio.new_event_loop()
+    t = threading.Thread(
+        target=run_web
+    )
 
-    asyncio.set_event_loop(loop)
+    t.daemon = True
+    t.start()
 
     main()
