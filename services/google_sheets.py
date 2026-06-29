@@ -1,30 +1,31 @@
-import os
 import json
+import os
+import threading
+
 import gspread
 
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 
-SHEET_NAME = "Snack ERP"
+SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Snack ERP")
 
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
-google_creds = json.loads(
-    os.getenv("GOOGLE_CREDENTIALS")
-)
+spreadsheet = None
+MOVEMENTS = None
+SHIPMENTS = None
+DAILY = None
+RAW = None
+STOCK = None
+ERRORS = None
+AUDIT_LOG = None
 
-creds = ServiceAccountCredentials.from_json_keyfile_dict(
-    google_creds,
-    scope
-)
-
-client = gspread.authorize(creds)
-
-spreadsheet = client.open(SHEET_NAME)
+_initialized = False
+_initialization_lock = threading.Lock()
 
 
 # ====================================
@@ -43,13 +44,49 @@ def get_or_create_worksheet(title, rows=1000, cols=30):
         )
 
 
-MOVEMENTS = get_or_create_worksheet("Movements")
-SHIPMENTS = get_or_create_worksheet("Shipments")
-DAILY = get_or_create_worksheet("Daily")
-RAW = get_or_create_worksheet("Raw")
-STOCK = get_or_create_worksheet("Stock")
-ERRORS = get_or_create_worksheet("Errors")
-AUDIT_LOG = get_or_create_worksheet("Audit Log")
+def initialize_google_sheets():
+    """Connect on first use instead of blocking application startup."""
+    global spreadsheet
+    global MOVEMENTS, SHIPMENTS, DAILY, RAW, STOCK, ERRORS, AUDIT_LOG
+    global _initialized
+
+    if _initialized:
+        return
+
+    with _initialization_lock:
+        if _initialized:
+            return
+
+        credentials_json = os.getenv("GOOGLE_CREDENTIALS")
+        if not credentials_json:
+            raise RuntimeError(
+                "GOOGLE_CREDENTIALS environment variable is not set"
+            )
+
+        try:
+            google_creds = json.loads(credentials_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "GOOGLE_CREDENTIALS must contain valid JSON"
+            ) from exc
+
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            google_creds,
+            scope
+        )
+        client = gspread.authorize(creds)
+        spreadsheet = client.open(SHEET_NAME)
+
+        MOVEMENTS = get_or_create_worksheet("Movements")
+        SHIPMENTS = get_or_create_worksheet("Shipments")
+        DAILY = get_or_create_worksheet("Daily")
+        RAW = get_or_create_worksheet("Raw")
+        STOCK = get_or_create_worksheet("Stock")
+        ERRORS = get_or_create_worksheet("Errors")
+        AUDIT_LOG = get_or_create_worksheet("Audit Log")
+
+        ensure_headers()
+        _initialized = True
 
 
 # ====================================
@@ -132,9 +169,6 @@ def ensure_headers():
         ])
 
 
-ensure_headers()
-
-
 # ====================================
 # ОБРАТНАЯ СОВМЕСТИМОСТЬ
 # ====================================
@@ -159,6 +193,7 @@ def log_to_sheet(type_, item, quantity, place=None, revenue=None):
 # ====================================
 
 def log_movement(type_, item, quantity, place=None, revenue=None):
+    initialize_google_sheets()
 
     MOVEMENTS.append_row([
         datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -176,6 +211,7 @@ def log_movement(type_, item, quantity, place=None, revenue=None):
 
 def log_audit(user, user_id, action, item, quantity="", comment=""):
     try:
+        initialize_google_sheets()
         AUDIT_LOG.append_row([
             datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             user or "",
@@ -201,6 +237,7 @@ def log_shipment(
     price_per_piece,
     revenue
 ):
+    initialize_google_sheets()
 
     SHIPMENTS.append_row([
         datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -218,6 +255,7 @@ def log_shipment(
 # ====================================
 
 def sync_daily_report(report):
+    initialize_google_sheets()
 
     DAILY.append_row([
         datetime.utcnow().strftime("%Y-%m-%d"),
@@ -237,6 +275,7 @@ def sync_daily_report(report):
 # ====================================
 
 def sync_raw_report(report):
+    initialize_google_sheets()
 
     for item, data in report["deviations"].items():
 
@@ -257,6 +296,7 @@ def sync_raw_report(report):
 # ====================================
 
 def sync_stock_report(stock_data):
+    initialize_google_sheets()
 
     for item, balance in stock_data.items():
 
@@ -281,6 +321,7 @@ def sync_stock_report(stock_data):
 # ====================================
 
 def log_error(error_type, item, description):
+    initialize_google_sheets()
 
     ERRORS.append_row([
         datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),

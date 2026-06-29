@@ -1,7 +1,10 @@
+import asyncio
 import os
+import threading
+
 from dotenv import load_dotenv
+from flask import Flask
 from telegram import Update
-from config.brands import get_brand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -57,10 +60,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 user_state = {}
 
-from flask import Flask
-import threading
-import os
-
 web = Flask(__name__)
 
 
@@ -72,7 +71,8 @@ def home():
 def run_web():
     web.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000))
+        port=int(os.environ.get("PORT", 10000)),
+        use_reloader=False,
     )
 
 
@@ -1224,11 +1224,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-import asyncio
 # =========================
 # запуск
 # =========================
 def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN environment variable is not set")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1245,8 +1246,7 @@ def main():
     app.run_polling()
 
 
-if __name__ == "__main__":
-
+def run():
     t = threading.Thread(
         target=run_web
     )
@@ -1254,4 +1254,12 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
 
+    # Python 3.14 no longer creates an event loop implicitly. PTB 22.1
+    # expects a current loop when run_polling() starts.
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
     main()
+
+
+if __name__ == "__main__":
+    run()
