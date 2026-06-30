@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -83,6 +84,15 @@ web = Flask(__name__)
 bot_application = None
 bot_event_loop = None
 bot_ready = threading.Event()
+runtime_metrics = {
+    "webhook_updates_received": 0,
+    "last_update_at": None,
+    "last_update_id": None,
+    "start_commands_received": 0,
+    "last_start_at": None,
+    "handler_errors": 0,
+    "last_handler_error": None,
+}
 
 
 @web.route("/")
@@ -92,11 +102,32 @@ def home():
 
 @web.route("/status")
 def status():
-    return jsonify({
+    data = {
         "ok": True,
         "telegram_mode": "webhook",
         "bot_ready": bot_ready.is_set(),
-    })
+        **runtime_metrics,
+    }
+
+    if bot_ready.is_set() and bot_application and bot_event_loop:
+        data["bot_username"] = bot_application.bot.username
+
+        future = asyncio.run_coroutine_threadsafe(
+            bot_application.bot.get_webhook_info(),
+            bot_event_loop,
+        )
+        try:
+            webhook_info = future.result(timeout=5)
+            data["webhook"] = {
+                "url": webhook_info.url,
+                "pending_update_count": webhook_info.pending_update_count,
+                "last_error_message": webhook_info.last_error_message,
+            }
+        except Exception as exc:
+            logger.exception("Failed to retrieve Telegram webhook info")
+            data["webhook_check_error"] = type(exc).__name__
+
+    return jsonify(data)
 
 
 @web.post(WEBHOOK_PATH)
@@ -111,6 +142,10 @@ def telegram_webhook():
         return "Bot is starting", 503
 
     update = Update.de_json(request.get_json(force=True), bot_application.bot)
+    runtime_metrics["webhook_updates_received"] += 1
+    runtime_metrics["last_update_at"] = datetime.now(timezone.utc).isoformat()
+    runtime_metrics["last_update_id"] = update.update_id
+
     future = asyncio.run_coroutine_threadsafe(
         bot_application.update_queue.put(update),
         bot_event_loop,
@@ -217,6 +252,9 @@ def format_report_message(report, title):
 # старт
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    runtime_metrics["start_commands_received"] += 1
+    runtime_metrics["last_start_at"] = datetime.now(timezone.utc).isoformat()
+
     user_id = update.message.from_user.id
     user_state.pop(user_id, None)
 
@@ -1292,6 +1330,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def error_handler(update, context):
     error = context.error
+    runtime_metrics["handler_errors"] += 1
+    runtime_metrics["last_handler_error"] = (
+        f"{type(error).__name__}: {error}"
+    )[:500]
+
     logger.error(
         "Unhandled exception while processing Telegram update",
         exc_info=(
