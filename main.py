@@ -17,7 +17,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from db.database import SessionLocal
+from db.database import Base, SessionLocal, engine
 from db.models import InventoryMovement, TechCard, ProductPrice, RawMaterialPrice
 from keyboards import (
     main_menu,
@@ -85,6 +85,7 @@ bot_application = None
 bot_event_loop = None
 bot_ready = threading.Event()
 runtime_metrics = {
+    "database_ready": False,
     "webhook_updates_received": 0,
     "last_update_at": None,
     "last_update_id": None,
@@ -165,6 +166,16 @@ def run_web():
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000)),
         use_reloader=False,
+    )
+
+
+def initialize_database():
+    """Create only missing tables; existing tables and rows stay untouched."""
+    Base.metadata.create_all(bind=engine)
+    runtime_metrics["database_ready"] = True
+    logger.info(
+        "Database schema ready: %s",
+        ", ".join(sorted(Base.metadata.tables)),
     )
 
 
@@ -1383,6 +1394,8 @@ async def run_bot():
 
     t.daemon = True
     t.start()
+
+    await asyncio.to_thread(initialize_database)
 
     async with bot_application:
         await bot_application.bot.set_webhook(

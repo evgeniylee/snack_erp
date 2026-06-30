@@ -2,6 +2,8 @@ import os
 import unittest
 from unittest.mock import patch
 
+from sqlalchemy import inspect
+
 
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["BOT_TOKEN"] = "  123456:test-token\n"
@@ -38,6 +40,21 @@ class StartupTest(unittest.TestCase):
 
         self.assertIsNone(application.updater)
         self.assertEqual(len(application.handlers[0]), 2)
+
+    def test_database_initialization_creates_all_tables(self):
+        main.initialize_database()
+
+        self.assertEqual(
+            set(inspect(main.engine).get_table_names()),
+            {
+                "inventory_movements",
+                "product_prices",
+                "raw_material_prices",
+                "tech_cards",
+                "user_roles",
+            },
+        )
+        self.assertTrue(main.runtime_metrics["database_ready"])
 
 
 if __name__ == "__main__":
