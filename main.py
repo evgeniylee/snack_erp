@@ -1,9 +1,12 @@
 import asyncio
+import hashlib
+import hmac
+import logging
 import os
 import threading
 
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, jsonify, request
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -57,15 +60,69 @@ from config.brands import (
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_BASE_URL = os.getenv(
+    "WEBHOOK_BASE_URL",
+    "https://snack-erp-bot.onrender.com",
+).rstrip("/")
+WEBHOOK_PATH = "/telegram"
+WEBHOOK_SECRET = (
+    hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
+    if BOT_TOKEN
+    else ""
+)
 
 user_state = {}
 
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
 web = Flask(__name__)
+bot_application = None
+bot_event_loop = None
+bot_ready = threading.Event()
 
 
 @web.route("/")
 def home():
     return "ERP BOT OK"
+
+
+@web.route("/status")
+def status():
+    return jsonify({
+        "ok": True,
+        "telegram_mode": "webhook",
+        "bot_ready": bot_ready.is_set(),
+    })
+
+
+@web.post(WEBHOOK_PATH)
+def telegram_webhook():
+    if not hmac.compare_digest(
+        request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""),
+        WEBHOOK_SECRET,
+    ):
+        return "Forbidden", 403
+
+    if not bot_ready.is_set() or not bot_application or not bot_event_loop:
+        return "Bot is starting", 503
+
+    update = Update.de_json(request.get_json(force=True), bot_application.bot)
+    future = asyncio.run_coroutine_threadsafe(
+        bot_application.update_queue.put(update),
+        bot_event_loop,
+    )
+
+    try:
+        future.result(timeout=5)
+    except Exception:
+        logger.exception("Failed to enqueue Telegram update")
+        return "Temporary failure", 503
+
+    return "OK"
 
 
 def run_web():
@@ -163,9 +220,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_state.pop(user_id, None)
 
+    try:
+        reply_markup = main_menu(user_id)
+    except Exception:
+        logger.exception("Database role lookup failed during /start")
+        reply_markup = main_menu()
+
     await update.message.reply_text(
         "Выберите действие:",
-        reply_markup=main_menu(user_id)
+        reply_markup=reply_markup,
     )
 
 
@@ -1227,26 +1290,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # запуск
 # =========================
-def main():
+async def error_handler(update, context):
+    error = context.error
+    logger.error(
+        "Unhandled exception while processing Telegram update",
+        exc_info=(
+            type(error),
+            error,
+            error.__traceback__,
+        ),
+    )
+
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "Произошла внутренняя ошибка. Попробуйте ещё раз."
+            )
+        except Exception:
+            logger.exception("Failed to send error message to Telegram")
+
+
+def build_application():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is not set")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).updater(None).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_message
         )
     )
+    application.add_error_handler(error_handler)
 
-    print("Бот запущен...")
-
-    app.run_polling()
+    return application
 
 
-def run():
+async def run_bot():
+    global bot_application, bot_event_loop
+
+    bot_application = build_application()
+    bot_event_loop = asyncio.get_running_loop()
+
     t = threading.Thread(
         target=run_web
     )
@@ -1254,11 +1341,29 @@ def run():
     t.daemon = True
     t.start()
 
-    # Python 3.14 no longer creates an event loop implicitly. PTB 22.1
-    # expects a current loop when run_polling() starts.
-    asyncio.set_event_loop(asyncio.new_event_loop())
+    async with bot_application:
+        await bot_application.bot.set_webhook(
+            url=f"{WEBHOOK_BASE_URL}{WEBHOOK_PATH}",
+            secret_token=WEBHOOK_SECRET,
+            drop_pending_updates=False,
+        )
+        await bot_application.start()
+        bot_ready.set()
+        logger.info(
+            "Bot webhook started at %s%s",
+            WEBHOOK_BASE_URL,
+            WEBHOOK_PATH,
+        )
 
-    main()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            bot_ready.clear()
+            await bot_application.stop()
+
+
+def run():
+    asyncio.run(run_bot())
 
 
 if __name__ == "__main__":

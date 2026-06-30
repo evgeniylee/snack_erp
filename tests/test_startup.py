@@ -1,4 +1,3 @@
-import asyncio
 import os
 import unittest
 from unittest.mock import patch
@@ -19,22 +18,23 @@ class StartupTest(unittest.TestCase):
         self.assertEqual(response.data, b"ERP BOT OK")
         self.assertIsNone(google_sheets.spreadsheet)
 
-    def test_run_creates_event_loop_before_polling(self):
-        try:
-            with patch.object(main, "main") as start_polling:
-                with patch.object(main.threading, "Thread") as thread:
-                    main.run()
+    def test_status_reports_webhook_mode(self):
+        response = main.web.test_client().get("/status")
 
-            start_polling.assert_called_once_with()
-            thread.assert_called_once_with(target=main.run_web)
-            thread.return_value.start.assert_called_once_with()
-            self.assertIsInstance(
-                asyncio.get_event_loop(),
-                asyncio.AbstractEventLoop,
-            )
-        finally:
-            asyncio.get_event_loop().close()
-            asyncio.set_event_loop(None)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["telegram_mode"], "webhook")
+        self.assertFalse(response.json["bot_ready"])
+
+    def test_webhook_rejects_missing_secret(self):
+        response = main.web.test_client().post("/telegram", json={})
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_application_is_created_without_polling_updater(self):
+        application = main.build_application()
+
+        self.assertIsNone(application.updater)
+        self.assertEqual(len(application.handlers[0]), 2)
 
 
 if __name__ == "__main__":
