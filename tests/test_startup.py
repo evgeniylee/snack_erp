@@ -4,13 +4,16 @@ from unittest.mock import patch
 
 
 os.environ["DATABASE_URL"] = "sqlite://"
-os.environ["BOT_TOKEN"] = "123456:test-token"
+os.environ["BOT_TOKEN"] = "  123456:test-token\n"
 
 import main
 from services import google_sheets
 
 
 class StartupTest(unittest.TestCase):
+    def test_bot_token_is_trimmed(self):
+        self.assertEqual(main.BOT_TOKEN, "123456:test-token")
+
     def test_health_check_does_not_initialize_google_sheets(self):
         response = main.web.test_client().get("/")
 

@@ -60,11 +60,11 @@ from config.brands import (
 )
 
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_BASE_URL = os.getenv(
     "WEBHOOK_BASE_URL",
     "https://snack-erp-bot.onrender.com",
-).rstrip("/")
+).strip().rstrip("/")
 WEBHOOK_PATH = "/telegram"
 WEBHOOK_SECRET = (
     hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
